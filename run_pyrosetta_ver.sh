@@ -51,7 +51,7 @@ fi
 ############################################################
 # 3. search for templates
 ############################################################
-DB="$PIPEDIR/pdb100_2021Mar03/pdb100_2021Mar03"
+DB="$(/bin/sh $PIPEDIR/find_my_db.sh 'pdb100')"
 if [ ! -s $WDIR/t000_.hhr ]
 then
     echo "Running hhsearch"
@@ -68,7 +68,7 @@ if [ ! -s $WDIR/t000_.3track.npz ]
 then
     echo "Predicting distance and orientations"
     python $PIPEDIR/network/predict_pyRosetta.py \
-        -m $PIPEDIR/weights \
+        -m "$(/bin/sh $PIPEDIR/find_my_db.sh 'weight')" \
         -i $WDIR/t000_.msa0.a3m \
         -o $WDIR/t000_.3track \
         --hhr $WDIR/t000_.hhr \

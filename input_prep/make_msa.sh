@@ -13,8 +13,8 @@ MEM="$4"
 
 # sequence databases
 declare -a DATABASES=( \
-    "$PIPEDIR/UniRef30_2020_06/UniRef30_2020_06" \
-    "$PIPEDIR/bfd/bfd_metaclust_clu_complete_id30_c90_final_seq.sorted_opt")
+    "$(/bin/sh $PIPEDIR/find_my_db.sh 'uniref30')" \
+    "$(/bin/sh $PIPEDIR/find_my_db.sh 'bfd')")
 
 # setup hhblits command
 HHBLITS="hhblits -o /dev/null -mact 0.35 -maxfilt 100000000 -neffmax 20 -cov 25 -cpu $CPU -nodiff -realign_max 100000000 -maxseq 1000000 -maxmem $MEM -n 4"
