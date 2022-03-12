@@ -10,12 +10,13 @@ usage() {
         echo "-i <input fasta>          Path to directory of supporting data"
         echo "Optional Parameters:"
         echo "-o <output_dir>           Path to a directory that will store the results."
-        echo "-j <nproc>                Maximun number of proccessor to be used."
-        echo "-m <memory>               Maximum volume memory to be used "
+        echo "-j <nproc>                Maximun number of proccessor to be used, 8 cores for default."
+        echo "-m <memory>               Maximum volume memory to be used, 64 GB for default"
+        echo "-t <type>                 Run type for RoseTTAFold, pyrosetta(default) or e2e "
         exit 1
 }
 
-while getopts ":i:o:j:m:" x; do
+while getopts ":i:o:j:t:m:" x; do
         case "${x}" in
         i)
                 input_fasta=$OPTARG
@@ -28,6 +29,9 @@ while getopts ":i:o:j:m:" x; do
         ;;
         m)
                 memory=$OPTARG
+        ;;
+        t)
+                type=$OPTARG
         ;;
         *)
                 echo What the hell?
@@ -72,6 +76,12 @@ if [[ "$memory" == "" ]] ; then
     memory=64
 fi
 
+if [[ "$type" == "" ]] ; then
+    type=pyrosetta
+fi
+if [[ "$type" != "pyrosetta" && "$type" != "e2e" ]] ; then
+    usage
+fi
 
 
 CPU="$nproc"  # number of CPUs to use
@@ -81,6 +91,7 @@ MEM="$memory" # max memory (in GB)
 LEN=`tail -n1 $IN | wc -m`
 
 mkdir -p $WDIR
+
 
 conda activate RoseTTAFold
 ############################################################
@@ -128,75 +139,97 @@ fi
 echo $banner
 
 WEIGHTS="$(/bin/sh $PIPEDIR/find_my_db.sh 'weight')"
-############################################################
-# 4. predict distances and orientations
-############################################################
-echo $banner
-if [ ! -s $WDIR/t000_.3track.npz ]
-then
-    echo "Predicting distance and orientations"
-    cmd="python $PIPEDIR/network/predict_pyRosetta.py \
+if [[ "$type" == 'e2e' ]];then
+    ############################################################
+    # 4a. end-to-end prediction
+    ############################################################
+    echo $banner
+    if [ ! -s $WDIR/t000_.3track.npz ]
+    then
+        echo "Running end-to-end prediction"
+        date
+        cmd="python $PIPEDIR/network/predict_e2e.py \
         -m $WEIGHTS \
         -i $WDIR/t000_.msa0.a3m \
-        -o $WDIR/t000_.3track \
+        -o $WDIR/t000_.e2e \
         --hhr $WDIR/t000_.hhr \
         --atab $WDIR/t000_.atab \
         --db $DB"
     echo "$cmd"
     eval "$cmd"
-fi
-echo $banner
-############################################################
-# 5. perform modeling
-############################################################
-echo $banner
-mkdir -p $WDIR/pdb-3track
-conda deactivate
-conda activate folding
+    fi
 
-for m in 0 1 2
-do
-    for p in 0.05 0.15 0.25 0.35 0.45
+elif [[ "$type" == "pyrosetta" ]]; then
+    ############################################################
+    # 4b. predict distances and orientations
+    ############################################################
+    echo $banner
+    if [ ! -s $WDIR/t000_.3track.npz ]
+    then
+        echo "Predicting distance and orientations"
+        cmd="python $PIPEDIR/network/predict_pyRosetta.py \
+            -m $WEIGHTS \
+            -i $WDIR/t000_.msa0.a3m \
+            -o $WDIR/t000_.3track \
+            --hhr $WDIR/t000_.hhr \
+            --atab $WDIR/t000_.atab \
+            --db $DB"
+        echo "$cmd"
+        eval "$cmd"
+    fi
+    echo $banner
+    ############################################################
+    # 5. perform modeling
+    ############################################################
+    echo $banner
+    mkdir -p $WDIR/pdb-3track
+    conda deactivate
+    conda activate folding
+
+    for m in 0 1 2
     do
-        for ((i=0;i<1;i++))
+        for p in 0.05 0.15 0.25 0.35 0.45
         do
-            if [ ! -f $WDIR/pdb-3track/model${i}_${m}_${p}.pdb ]; then
-                echo "python -u $PIPEDIR/folding/RosettaTR.py --roll -r 3 -pd $p -m $m -sg 7,3 $WDIR/t000_.3track.npz $IN $WDIR/pdb-3track/model${i}_${m}_${p}.pdb"
-            fi
+            for ((i=0;i<1;i++))
+            do
+                if [ ! -f $WDIR/pdb-3track/model${i}_${m}_${p}.pdb ]; then
+                    echo "python -u $PIPEDIR/folding/RosettaTR.py --roll -r 3 -pd $p -m $m -sg 7,3 $WDIR/t000_.3track.npz $IN $WDIR/pdb-3track/model${i}_${m}_${p}.pdb"
+                fi
+            done
         done
-    done
-done > $WDIR/parallel.fold.list
+    done > $WDIR/parallel.fold.list
 
-N=`cat $WDIR/parallel.fold.list | wc -l`
-if [ "$N" -gt "0" ]; then
-    echo "Running parallel RosettaTR.py"    
-    cmd="parallel -j $CPU < $WDIR/parallel.fold.list"
+    N=`cat $WDIR/parallel.fold.list | wc -l`
+    if [ "$N" -gt "0" ]; then
+        echo "Running parallel RosettaTR.py"
+        cmd="parallel -j $CPU < $WDIR/parallel.fold.list"
         echo "$cmd"
         eval "$cmd"
-fi
-echo $banner
-############################################################
-# 6. Pick final models
-############################################################
-echo $banner
-count=$(find $WDIR/pdb-3track -maxdepth 1 -name '*.npz' | grep -v 'features' | wc -l)
-if [ "$count" -lt "15" ]; then
-    # run DeepAccNet-msa
-    echo "Running DeepAccNet-msa"
-    cmd="python $PIPEDIR/DAN-msa/ErrorPredictorMSA.py --roll -p $CPU $WDIR/t000_.3track.npz $WDIR/pdb-3track $WDIR/pdb-3track"
+    fi
+    echo $banner
+    ############################################################
+    # 6. Pick final models
+    ############################################################
+    echo $banner
+    count=$(find $WDIR/pdb-3track -maxdepth 1 -name '*.npz' | grep -v 'features' | wc -l)
+    if [ "$count" -lt "15" ]; then
+        # run DeepAccNet-msa
+        echo "Running DeepAccNet-msa"
+        cmd="python $PIPEDIR/DAN-msa/ErrorPredictorMSA.py --roll -p $CPU $WDIR/t000_.3track.npz $WDIR/pdb-3track $WDIR/pdb-3track"
         echo "$cmd"
         eval "$cmd"
-fi
+    fi
 
-if [ ! -s $WDIR/model/model_5.crderr.pdb ]
-then
-    echo "Picking final models"
-    cmd="python -u -W ignore $PIPEDIR/DAN-msa/pick_final_models.div.py \
+    if [ ! -s $WDIR/model/model_5.crderr.pdb ]
+    then
+        echo "Picking final models"
+        cmd="python -u -W ignore $PIPEDIR/DAN-msa/pick_final_models.div.py \
             $WDIR/pdb-3track $WDIR/model $CPU"
-    echo "$cmd"
-    eval "$cmd"
-    echo "Final models saved in: $2/model"
-fi
+        echo "$cmd"
+        eval "$cmd"
+        echo "Final models saved in: $2/model"
+    fi
 
+fi
 echo "Done"
 echo $banner
